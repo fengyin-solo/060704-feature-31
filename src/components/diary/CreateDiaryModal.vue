@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useUserStore } from '@/stores/user'
 import { useDiaryStore } from '@/stores/diary'
 import { pluginLoader } from '@/engine/PluginLoader'
@@ -21,6 +21,9 @@ const selectedType = ref('base')
 const selectedMethods = ref<string[]>(['blur', 'chroma'])
 const isCreating = ref(false)
 const showSchedule = ref(false)
+const showPreview = ref(true)
+const previewDecayLevel = ref(0.3)
+const previewCanvasRef = ref<HTMLCanvasElement | null>(null)
 
 const enablePublishAt = ref(false)
 const enableDecayStartAt = ref(false)
@@ -36,10 +39,71 @@ const decayMethods = computed(() => Array.from(pluginLoader.getDecayMethods().en
 onMounted(async () => {
   await pluginLoader.loadAll()
   diaryTypes.value = Array.from(pluginLoader.getDiaryTypes().entries())
+  nextTick(() => renderPreview())
 })
 
 const canCreate = computed(() => {
   return title.value.trim() && content.value.trim()
+})
+
+const previewPipeline = computed((): PipelineStep[] => {
+  return selectedMethods.value.map((methodId, index) => {
+    const methodEntry = decayMethods.value.find(([id]) => id === methodId)
+    const method = methodEntry ? methodEntry[1] : null
+    if (!method) return null
+    
+    const params: Record<string, number> = {}
+    Object.entries(method.params).forEach(([key, def]) => {
+      params[key] = (def as { default: number }).default
+    })
+    
+    return {
+      methodId,
+      enabled: true,
+      params,
+      order: index
+    }
+  }).filter(Boolean) as PipelineStep[]
+})
+
+function renderPreview() {
+  if (!previewCanvasRef.value || !showPreview.value) return
+  
+  const ctx = previewCanvasRef.value.getContext('2d')
+  if (!ctx) return
+  
+  const previewContent = {
+    text: content.value || '开始输入内容，预览腐烂效果...',
+    title: title.value
+  }
+  
+  renderPipeline.renderPreview(
+    previewContent,
+    previewPipeline.value,
+    previewDecayLevel.value,
+    ctx
+  )
+}
+
+let previewRenderTimer: number | null = null
+
+function schedulePreviewRender() {
+  if (previewRenderTimer) {
+    clearTimeout(previewRenderTimer)
+  }
+  previewRenderTimer = window.setTimeout(() => {
+    renderPreview()
+    previewRenderTimer = null
+  }, 50)
+}
+
+watch(content, schedulePreviewRender)
+watch(selectedMethods, schedulePreviewRender, { deep: true })
+watch(previewDecayLevel, schedulePreviewRender)
+watch(showPreview, (val) => {
+  if (val) {
+    nextTick(() => renderPreview())
+  }
 })
 
 const schedulePreview = computed(() => {
@@ -201,6 +265,46 @@ function formatTime(offset: number): string {
             <p class="text-right text-gray-500 text-xs mt-1 font-vt323">
               {{ content.length }}/1000
             </p>
+          </div>
+          
+          <div class="border-t border-gray-700 pt-4">
+            <button
+              class="flex items-center gap-2 font-vt323 text-lg transition-colors"
+              :class="showPreview ? 'text-diary-fresh' : 'text-gray-400 hover:text-white'"
+              @click="showPreview = !showPreview"
+            >
+              <span>{{ showPreview ? '▼' : '▶' }}</span>
+              <span>👁️ 实时预览</span>
+            </button>
+            
+            <div v-show="showPreview" class="mt-4 space-y-3">
+              <div class="crt-container rounded overflow-hidden border border-gray-700 bg-gray-900">
+                <canvas
+                  ref="previewCanvasRef"
+                  width="500"
+                  height="200"
+                  class="w-full h-auto block"
+                ></canvas>
+              </div>
+              
+              <div>
+                <label class="block font-vt323 text-gray-400 mb-1 text-sm">
+                  衰变等级预览: {{ Math.floor(previewDecayLevel * 100) }}%
+                </label>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  v-model.number="previewDecayLevel"
+                  class="w-full accent-diary-fresh"
+                />
+              </div>
+              
+              <p class="text-gray-500 text-xs font-vt323">
+                拖动滑块预览不同腐烂程度的效果，实时查看选中的烂法组合
+              </p>
+            </div>
           </div>
           
           <div>
